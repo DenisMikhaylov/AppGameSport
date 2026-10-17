@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Место силы</title>
+  <script src="https://st.max.ru/js/max-web-app.js"></script>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 0; padding: 16px; background: #f5f5f5; color: #222; }
+    .card { background: #fff; border-radius: 12px; padding: 16px; margin-bottom: 12px; box-shadow: 0 2px 6px rgba(0,0,0,.08); }
+    .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+    .balance { font-size: 28px; font-weight: 800; color: #e67e22; }
+    .btn { background: #e67e22; color: #fff; border: none; padding: 12px 16px; border-radius: 8px; font-size: 16px; width: 100%; cursor: pointer; margin-top: 8px; }
+    .btn:disabled { background: #ccc; }
+    .btn-small { padding: 8px 12px; font-size: 14px; width: auto; }
+    .item { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-bottom: 1px solid #eee; }
+    .tag { font-size: 12px; padding: 2px 8px; border-radius: 10px; background: #eee; }
+    .tag.approved { background: #d4edda; color: #155724; }
+    .tag.pending { background: #fff3cd; color: #856404; }
+    .nav { display: flex; gap: 8px; margin-bottom: 16px; }
+    .nav button { flex: 1; padding: 10px; border: none; border-radius: 8px; background: #ddd; }
+    .nav button.active { background: #e67e22; color: #fff; }
+    input, textarea, select { width: 100%; padding: 10px; margin: 6px 0; box-sizing: border-box; border: 1px solid #ddd; border-radius: 8px; font-size: 15px; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div><h2 style="margin:0">Место силы</h2><small id="userName"></small></div>
+    <div class="balance" id="balance">0</div>
+  </div>
+  <div class="nav">
+    <button onclick="showTab('progress')" class="active" id="tabProgress">Прогресс</button>
+    <button onclick="showTab('tasks')" id="tabTasks">Задания</button>
+    <button onclick="showTab('shop')" id="tabShop">Магазин</button>
+    <button onclick="showTab('coach')" id="tabCoachBtn" style="display:none">Тренер</button>
+  </div>
+  <div id="progressTab"><div class="card"><h3>Элементы</h3><div id="skillsList">Загрузка...</div></div></div>
+  <div id="tasksTab" style="display:none"><div class="card"><h3>Мои задания</h3><div id="tasksList">Загрузка...</div></div></div>
+  <div id="shopTab" style="display:none"><div class="card"><h3>Награды</h3><div id="rewardsList">Загрузка...</div></div></div>
+  <div id="coachTab" style="display:none">
+    <div class="card"><h3>Новое задание</h3><select id="taskAthlete"><option value="ALL">Всем ученикам</option></select><input id="taskTitle" placeholder="Название задания" /><textarea id="taskDesc" placeholder="Описание" rows="2"></textarea><input id="taskPoints" type="number" value="10" placeholder="Бонусные бейджи" /><input id="taskDeadline" type="date" /><button class="btn" onclick="createTask()">Создать задание</button></div>
+    <div class="card"><h3>Отметки о выполнении</h3><div id="pendingCompletions">Загрузка...</div></div>
+    <div class="card"><h3>Сдача элементов</h3><div id="pendingSkills">Загрузка...</div></div>
+  </div>
+  <script>
+    const API_URL = "ВАШ_URL_ВЕБ_ПРИЛОЖЕНИЯ";
+    const SECRET = "ВАШ_СЕКРЕТНЫЙ_КЛЮЧ";
+    let USER_ID = null; let activeTimer = null;
+
+    if (window.WebApp && window.WebApp.initData) {
+      authenticateUser(window.WebApp.initData);
+    } else { alert("Откройте приложение через MAX"); }
+
+    async function authenticateUser(rawInitData) {
+      const res = await fetch(API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'authenticate', initData: rawInitData, secret: SECRET }) });
+      const data = await res.json();
+      if (data.ok) {
+        USER_ID = data.user.id;
+        document.getElementById('userName').textContent = data.user.first_name;
+        if (!data.athlete.consent) { showConsentScreen(); } else { loadProfile(); }
+      } else { alert("Ошибка авторизации: " + (data.error || "Неизвестная ошибка")); }
+    }
+
+    function showConsentScreen() {
+      document.body.innerHTML = `<div class="card"><h2>Согласие родителя</h2><p>Я, родитель (законный представитель), даю согласие на обработку персональных данных моего ребенка.</p><button class="btn" onclick="giveConsent()">Я согласен</button></div>`;
+    }
+    async function giveConsent() {
+      await apiPost({ action: 'giveConsent', userId: USER_ID });
+      location.reload();
+    }
+
+    async function apiGet(action, params = {}) {
+      const url = new URL(API_URL); url.searchParams.set('action', action); url.searchParams.set('secret', SECRET);
+      for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
+      return (await fetch(url)).json();
+    }
+    async function apiPost(body) {
+      return (await fetch(API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...body, secret: SECRET }) })).json();
+    }
+
+    async function loadProfile() {
+      const data = await apiGet('getProfile', { userId: USER_ID });
+      if (data.error) { alert(data.error); return; }
+      document.getElementById('balance').textContent = data.balance;
+      window._submissions = data.submissions || [];
+      if (data.role === 'coach') document.getElementById('tabCoachBtn').style.display = 'block';
+      loadSkills();
+    }
+
+    async function loadSkills() {
+      const data = await apiGet('getSkills');
+      const cont = document.getElementById('skillsList');
+      if (!data.skills) { cont.textContent = 'Ошибка'; return; }
+      cont.innerHTML = data.skills.map(s => {
+        const sub = (window._submissions || []).find(x => x.skill_id === s.id);
+        let statusHtml = sub ? (sub.status === 'approved' ? '<span class="tag approved">Освоено</span>' : '<span class="tag pending">На проверке</span>') : `<button class="btn btn-small" onclick="submitSkill('${s.id}')">Я готов сдать</button>`;
+        return `<div class="item"><div><strong>${s.name}</strong><br><small>${s.category}</small></div><div>${statusHtml}</div></div>`;
+      }).join('');
+    }
+    async function submitSkill(skillId) { const res = await apiPost({ action: 'submitSkill', userId: USER_ID, skillId }); if (res.ok) { alert('Заявка отправлена!'); loadProfile(); } else alert(res.error); }
+
+    async function loadTasks() {
+      const data = await apiGet('getTasks', { userId: USER_ID });
+      const cont = document.getElementById('tasksList');
+      if (!data.tasks || !data.tasks.length) { cont.textContent = 'Пока нет активных заданий'; return; }
+      cont.innerHTML = data.tasks.map(t => {
+        let actionHtml;
+        if (t.status === 'approved') actionHtml = '<span class="tag approved">Выполнено</span>';
+        else if (t.status === 'pending') actionHtml = '<span class="tag pending">На проверке</span>';
+        else actionHtml = `<button class="btn btn-small" onclick="startTaskTimer('${t.id}', ${t.duration_seconds || 60})">▶ Начать (${t.duration_seconds || 60} сек)</button><div id="timer-${t.id}" style="display:none; margin-top:8px; font-weight:bold; color:#e67e22;"></div>`;
+        return `<div class="item"><div style="max-width:60%"><strong>${t.title}</strong><br><small>${t.description || ''}</small><br><small>+${t.reward_points} бейджей${t.deadline ? ', до ' + t.deadline : ''}</small></div><div>${actionHtml}</div></div>`;
+      }).join('');
+    }
+
+    function startTaskTimer(taskId, durationSeconds) {
+      if (activeTimer) { clearInterval(activeTimer.interval); activeTimer = null; }
+      const display = document.getElementById(`timer-${taskId}`);
+      const button = display.previousElementSibling;
+      button.disabled = true; display.style.display = 'block';
+      let remaining = durationSeconds; display.textContent = `⏳ Осталось: ${remaining} сек`;
+      const interval = setInterval(() => {
+        remaining -= 1; display.textContent = `⏳ Осталось: ${remaining} сек`;
+        if (remaining <= 0) {
+          clearInterval(interval); display.textContent = '✅ Время вышло!';
+          button.outerHTML = `<button class="btn btn-small" onclick="submitTask('${taskId}')">Я выполнил!</button>`;
+          activeTimer = null;
+        }
+      }, 1000);
+      activeTimer = { interval, taskId };
+    }
+    async function submitTask(taskId) { const res = await apiPost({ action: 'submitTask', userId: USER_ID, taskId }); if (res.ok) { alert('Отправлено тренеру!'); loadTasks(); } else alert(res.error); }
+
+    async function loadRewards() {
+      const data = await apiGet('getRewards');
+      const cont = document.getElementById('rewardsList');
+      if (!data.rewards) { cont.textContent = 'Ошибка'; return; }
+      cont.innerHTML = data.rewards.map(r => {
+        const out = r.type === 'physical' && r.stock <= 0;
+        return `<div class="item"><div><strong>${r.title}</strong><br><small>${r.cost} бейджей</small></div><button class="btn btn-small" ${out ? 'disabled' : ''} onclick="redeem('${r.id}')">${out ? 'Нет' : 'Обменять'}</button></div>`;
+      }).join('');
+    }
+    async function redeem(rewardId) { if (!confirm('Обменять?')) return; const res = await apiPost({ action: 'redeemReward', userId: USER_ID, rewardId }); if (res.ok) { alert('Успешно!'); loadProfile(); } else alert(res.error); }
+
+    async function loadCoachData() {
+      const aData = await apiGet('getAllAthletes');
+      const sel = document.getElementById('taskAthlete');
+      sel.innerHTML = '<option value="ALL">Всем ученикам</option>' + (aData.athletes || []).map(a => `<option value="${a.id}">${a.name}</option>`).join('');
+      const cData = await apiGet('getPendingTaskCompletions');
+      const cont = document.getElementById('pendingCompletions');
+      if (!cData.completions || !cData.completions.length) cont.textContent = 'Нет новых отметок';
+      else cont.innerHTML = cData.completions.map(c => `<div class="item"><div><strong>${c.athlete_name}</strong><br><small>${c.task_title}</small></div><button class="btn btn-small" onclick="approveCompletion('${c.id}')">Подтвердить</button></div>`).join('');
+      const sData = await apiGet('getPendingSubmissions');
+      const sCont = document.getElementById('pendingSkills');
+      if (!sData.submissions || !sData.submissions.length) sCont.textContent = 'Нет новых заявок';
+      else sCont.innerHTML = sData.submissions.map(s => `<div class="item"><div><strong>${s.athlete_name}</strong><br><small>${s.skill_name}</small></div><button class="btn btn-small" onclick="approveSkill('${s.id}')">Подтвердить</button></div>`).join('');
+    }
+    async function createTask() {
+      const title = document.getElementById('taskTitle').value.trim();
+      if (!title) { alert('Введите название'); return; }
+      const res = await apiPost({ action: 'createTask', coachId: USER_ID, athleteId: document.getElementById('taskAthlete').value, title, description: document.getElementById('taskDesc').value, points: document.getElementById('taskPoints').value, deadline: document.getElementById('taskDeadline').value });
+      if (res.ok) { alert('Создано!'); document.getElementById('taskTitle').value = ''; document.getElementById('taskDesc').value = ''; loadCoachData(); } else alert(res.error);
+    }
+    async function approveCompletion(id) { const res = await apiPost({ action: 'approveTask', completionId: id }); if (res.ok) { alert('Подтверждено! +' + res.amount); loadCoachData(); } else alert(res.error); }
+    async function approveSkill(id) { const res = await apiPost({ action: 'approveSubmission', submissionId: id }); if (res.ok) { alert('Подтверждено! +' + res.amount); loadCoachData(); } else alert(res.error); }
+
+    function showTab(tab) {
+      const tabs = { progress: 'progressTab', tasks: 'tasksTab', shop: 'shopTab', coach: 'coachTab' };
+      Object.entries(tabs).forEach(([key, el]) => { document.getElementById(el).style.display = key === tab ? 'block' : 'none'; const btn = document.getElementById('tab' + key.charAt(0).toUpperCase() + key.slice(1)); if (btn) btn.classList.toggle('active', key === tab); });
+      if (tab === 'shop') loadRewards();
+      if (tab === 'tasks') loadTasks();
+      if (tab === 'coach') loadCoachData();
+    }
+  </script>
+</body>
+</html>
